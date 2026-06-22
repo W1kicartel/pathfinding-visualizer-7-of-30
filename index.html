@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pathfinding Visualizer — Dijkstra & A*</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --fg: #e2e8f0; --muted: #94a3b8;
+    --border: #334155; --accent: #38bdf8; --accent2: #818cf8;
+    --wall: #0b1220; --visited: #6366f1; --frontier: #22d3ee;
+    --path: #facc15; --start: #22c55e; --end: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 1rem;
+  }
+  h1 { font-size: 1.3rem; margin: .25rem 0; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: .85rem; margin-bottom: 1rem; text-align: center; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+    justify-content: center; margin-bottom: 1rem; max-width: 900px;
+  }
+  select, button {
+    font: inherit; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: .45rem .8rem;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #06283d; border-color: var(--accent); font-weight: 600; }
+  label.speed { display: flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .85rem; }
+  #grid {
+    display: grid; gap: 1px; background: var(--border);
+    border: 2px solid var(--border); border-radius: 6px; overflow: hidden;
+    user-select: none; touch-action: none;
+  }
+  .cell { width: 22px; height: 22px; background: var(--panel); transition: background .12s; }
+  .cell.wall { background: var(--wall); }
+  .cell.visited { background: var(--visited); animation: pop .3s ease; }
+  .cell.frontier { background: var(--frontier); }
+  .cell.path { background: var(--path); }
+  .cell.start { background: var(--start); }
+  .cell.end { background: var(--end); }
+  @keyframes pop { 0% { transform: scale(.4); } 100% { transform: scale(1); } }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; font-size: .8rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .stats { margin-top: .75rem; font-size: .9rem; color: var(--fg); min-height: 1.2em; }
+  .stats b { color: var(--accent); }
+  .hint { color: var(--muted); font-size: .8rem; margin-top: .5rem; }
+  footer { margin-top: 1.5rem; color: var(--muted); font-size: .8rem; }
+  footer a { color: var(--accent2); }
+</style>
+</head>
+<body>
+  <h1>Pathfinding <span>Visualizer</span></h1>
+  <div class="sub">Watch <b>Dijkstra</b> and <b>A*</b> race across a grid. Drag to draw walls; drag the green/red squares to move start &amp; goal.</div>
+
+  <div class="controls">
+    <select id="algo">
+      <option value="astar">A* (Manhattan heuristic)</option>
+      <option value="dijkstra">Dijkstra</option>
+    </select>
+    <button id="run" class="primary">▶ Visualize</button>
+    <button id="maze">Generate maze</button>
+    <button id="clearWalls">Clear walls</button>
+    <button id="reset">Reset</button>
+    <label class="speed">Speed
+      <input id="speed" type="range" min="1" max="100" value="60">
+    </label>
+  </div>
+
+  <div id="grid"></div>
+
+  <div class="stats" id="stats">Ready. Press <b>Visualize</b>.</div>
+
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--start)"></i> Start</span>
+    <span><i class="swatch" style="background:var(--end)"></i> Goal</span>
+    <span><i class="swatch" style="background:var(--wall)"></i> Wall</span>
+    <span><i class="swatch" style="background:var(--visited)"></i> Visited</span>
+    <span><i class="swatch" style="background:var(--path)"></i> Shortest path</span>
+  </div>
+  <div class="hint">Tip: A* usually visits far fewer cells than Dijkstra to find the same optimal path.</div>
+
+  <footer>Tool 7 of 30 — built by <a href="https://github.com/w1kicartel">Gianluca</a>. Algorithms in <code>pathfinding.js</code>.</footer>
+
+  <script src="pathfinding.js"></script>
+  <script>
+    const ROWS = 20, COLS = 35;
+    const gridEl = document.getElementById('grid');
+    const statsEl = document.getElementById('stats');
+    gridEl.style.gridTemplateColumns = `repeat(${COLS}, 22px)`;
+
+    let walls = new Set();
+    let start = { r: 10, c: 6 };
+    let end = { r: 10, c: 28 };
+    let cells = [];          // cells[r][c] -> DOM node
+    let running = false;
+    let mouseDown = false;
+    let dragging = null;     // 'start' | 'end' | 'wall' | 'erase'
+
+    const k = (r, c) => r + ',' + c;
+
+    /** Build the DOM grid once; wire mouse events for drawing/dragging. */
+    function build() {
+      gridEl.innerHTML = '';
+      cells = [];
+      for (let r = 0; r < ROWS; r++) {
+        const row = [];
+        for (let c = 0; c < COLS; c++) {
+          const el = document.createElement('div');
+          el.className = 'cell';
+          el.dataset.r = r; el.dataset.c = c;
+          el.addEventListener('mousedown', onDown);
+          el.addEventListener('mouseenter', onEnter);
+          gridEl.appendChild(el);
+          row.push(el);
+        }
+        cells.push(row);
+      }
+      paintStatic();
+    }
+
+    /** Repaint walls/start/end (not the search overlay). */
+    function paintStatic() {
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const el = cells[r][c];
+          el.className = 'cell';
+          if (walls.has(k(r, c))) el.classList.add('wall');
+        }
+      }
+      cells[start.r][start.c].classList.add('start');
+      cells[end.r][end.c].classList.add('end');
+    }
+
+    function clearOverlay() {
+      for (let r = 0; r < ROWS; r++)
+        for (let c = 0; c < COLS; c++)
+          cells[r][c].classList.remove('visited', 'frontier', 'path');
+    }
+
+    function onDown(e) {
+      if (running) return;
+      mouseDown = true;
+      const r = +e.target.dataset.r, c = +e.target.dataset.c;
+      if (r === start.r && c === start.c) dragging = 'start';
+      else if (r === end.r && c === end.c) dragging = 'end';
+      else { dragging = walls.has(k(r, c)) ? 'erase' : 'wall'; toggleWall(r, c, dragging); }
+      e.preventDefault();
+    }
+    function onEnter(e) {
+      if (!mouseDown || running) return;
+      const r = +e.target.dataset.r, c = +e.target.dataset.c;
+      if (dragging === 'start' && !walls.has(k(r, c))) { start = { r, c }; paintStatic(); }
+      else if (dragging === 'end' && !walls.has(k(r, c))) { end = { r, c }; paintStatic(); }
+      else if (dragging === 'wall' || dragging === 'erase') toggleWall(r, c, dragging);
+    }
+    function toggleWall(r, c, mode) {
+      if ((r === start.r && c === start.c) || (r === end.r && c === end.c)) return;
+      if (mode === 'wall') { walls.add(k(r, c)); cells[r][c].classList.add('wall'); }
+      else { walls.delete(k(r, c)); cells[r][c].classList.remove('wall'); }
+    }
+    window.addEventListener('mouseup', () => { mouseDown = false; dragging = null; });
+
+    const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+    /** Run the chosen algorithm and animate visited cells, then the path. */
+    async function visualize() {
+      if (running) return;
+      clearOverlay();
+      running = true;
+      setButtons(false);
+      const algo = document.getElementById('algo').value;
+      const grid = { rows: ROWS, cols: COLS, walls };
+      const result = (algo === 'astar' ? Pathfinding.astar : Pathfinding.dijkstra)(grid, start, end);
+
+      const speed = +document.getElementById('speed').value;
+      const delay = Math.max(0, 105 - speed); // higher slider = faster
+
+      for (const { r, c } of result.visited) {
+        if (!(r === start.r && c === start.c) && !(r === end.r && c === end.c))
+          cells[r][c].classList.add('visited');
+        if (delay) await sleep(delay / 6);
+      }
+      for (const { r, c } of result.path) {
+        if (!(r === start.r && c === start.c) && !(r === end.r && c === end.c))
+          cells[r][c].classList.add('path');
+        await sleep(Math.max(8, delay / 3));
+      }
+
+      const name = algo === 'astar' ? 'A*' : 'Dijkstra';
+      if (result.path.length) {
+        statsEl.innerHTML = `<b>${name}</b> visited <b>${result.visited.length}</b> cells · ` +
+          `path length <b>${result.path.length - 1}</b> · cost <b>${result.cost}</b>.`;
+      } else {
+        statsEl.innerHTML = `<b>${name}</b> visited <b>${result.visited.length}</b> cells — ` +
+          `no path to the goal (it is walled off).`;
+      }
+      running = false;
+      setButtons(true);
+    }
+
+    function setButtons(enabled) {
+      ['run', 'maze', 'clearWalls', 'reset', 'algo', 'speed']
+        .forEach(id => document.getElementById(id).disabled = !enabled);
+    }
+
+    /**
+     * Recursive-division maze generator: carve the area by adding wall lines
+     * with a single random gap, recursing into the two halves.
+     */
+    function generateMaze() {
+      if (running) return;
+      walls = new Set();
+      const odd = (lo, hi) => { // random odd number in [lo, hi]
+        let n = lo + Math.floor(Math.random() * (hi - lo + 1));
+        if (n % 2 === 0) n = n > lo ? n - 1 : n + 1;
+        return n;
+      };
+      function divide(r1, r2, c1, c2, horizontal) {
+        if (r2 - r1 < 2 || c2 - c1 < 2) return;
+        if (horizontal) {
+          const wr = odd(r1 + 1, r2 - 1);
+          const gap = c1 + Math.floor(Math.random() * (c2 - c1 + 1));
+          for (let c = c1; c <= c2; c++) if (c !== gap) addWall(wr, c);
+          divide(r1, wr - 1, c1, c2, !horizontal);
+          divide(wr + 1, r2, c1, c2, !horizontal);
+        } else {
+          const wc = odd(c1 + 1, c2 - 1);
+          const gap = r1 + Math.floor(Math.random() * (r2 - r1 + 1));
+          for (let r = r1; r <= r2; r++) if (r !== gap) addWall(r, wc);
+          divide(r1, r2, c1, wc - 1, !horizontal);
+          divide(r1, r2, wc + 1, c2, !horizontal);
+        }
+      }
+      function addWall(r, c) {
+        if ((r === start.r && c === start.c) || (r === end.r && c === end.c)) return;
+        walls.add(k(r, c));
+      }
+      divide(0, ROWS - 1, 0, COLS - 1, ROWS < COLS);
+      paintStatic();
+      statsEl.innerHTML = 'Maze generated. Press <b>Visualize</b>.';
+    }
+
+    document.getElementById('run').addEventListener('click', visualize);
+    document.getElementById('maze').addEventListener('click', generateMaze);
+    document.getElementById('clearWalls').addEventListener('click', () => {
+      if (running) return; walls = new Set(); paintStatic();
+      statsEl.innerHTML = 'Walls cleared.';
+    });
+    document.getElementById('reset').addEventListener('click', () => {
+      if (running) return;
+      walls = new Set(); start = { r: 10, c: 6 }; end = { r: 10, c: 28 };
+      paintStatic(); statsEl.innerHTML = 'Reset. Press <b>Visualize</b>.';
+    });
+
+    build();
+  </script>
+</body>
+</html>
